@@ -110,7 +110,7 @@ module.exports =
     self = @
 
     if @user.id != 0
-      database.exec("UPDATE users SET nickname = '#{self.user.nickname}', avatar = '#{self.user.avatar}', url = '#{self.user.url}', connectedlast = 'self.user.remoteAddress' WHERE id = '#{self.user.id}'").then((data) ->
+      database.exec("UPDATE users SET nickname = '#{self.user.nickname}', avatar = '#{self.user.avatar}', url = '#{self.user.url}', connectedlast = '#{self.user.remoteAddress}' WHERE id = '#{self.user.id}'").then((data) ->
         # ..
       )
 
