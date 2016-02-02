@@ -1,6 +1,7 @@
 parser = require "../utils/parser"
 math = require "../utils/math"
 logger = require "../utils/logger"
+builder = require "../utils/builder"
 
 User = require "../workers/user"
 Chat = require "../workers/chat"
@@ -12,14 +13,17 @@ class Handler
   ###
   Section: Properties
   ###
-  logger: new logger(name: 'Handler')
+  id: null
+  socket: null
   user: {}
   chat: null
+  logger: new logger(name: 'Handler')
 
   ###
   Section: Construction
   ###
-  constructor: (@socket) ->
+  constructor: ->
+    @user = {}
 
   ###
   Section: Private
@@ -29,13 +33,17 @@ class Handler
 
     packetTag = parser.getTagName(packet)
 
-    # TODO: Kick when the user is spamming packets
+    # TODO:
+    #  Kick when the user is spamming packets
+    #  Implement <idle />
     return if packetTag is null
 
-    switch packetTag
-      when "policy-file-request"
-        @send "<?xml version=\"1.0\"?><!DOCTYPE cross-domain-policy SYSTEM \"http://www.adobe.com/xml/dtds/cross-domain-policy.dtd\"><cross-domain-policy><site-control permitted-cross-domain-policies=\"master-only\"/>#{global.Application.config.allow}</cross-domain-policy>\0"          
-      when "y"
+    isSlash = parser.getAttribute(packet, 't')?.startsWith('/') || false
+
+    switch
+      when packetTag == "policy-file-request"
+        @send "<?xml version=\"1.0\"?><!DOCTYPE cross-domain-policy SYSTEM \"http://www.adobe.com/xml/dtds/cross-domain-policy.dtd\"><cross-domain-policy><site-control permitted-cross-domain-policies=\"master-only\"/>#{global.Application.config.allow}</cross-domain-policy>\0"
+      when packetTag == "y"
         ###
         @spec <y r="1" v="0" u="USER_ID(int)" />
         ###
@@ -43,19 +51,34 @@ class Handler
         loginShift = math.random(2, 5)
         loginTime = math.time()
 
-        @send "<y i=\"#{loginKey}\" c=\"#{loginTime}\" p=\"100_100_5_102\" />"
-      when "j2"
+        @send(builder.create('y')
+          .append('i', loginKey)
+          .append('c', loginTime)
+          .append('p', '100_100_5_102')
+          .compose())
+      when packetTag == "j2"
         ###
         Authenticate the client and join room
         @spec <j2 cb="0" l5="4288326302" l4="1400" l3="1267" l2="0" q="1" y="72226157" k="f13cee2b165605b4e400" k3="0" p="0" c="1" f="1" u="USER_ID(int)" d0="0" n="USERNAME(str)" a="91" h="" v="1" />
         ###
         User.process(@, packet).then(() =>
-          for client in global.Server.clients
-            client.write '<dup />\0' if client.handler.user.id is @user.id and client.handler.socket != @socket
+          # Delete user with fake id
+          delete global.Server.clients[@id]
 
-          Chat.joinRoom(@, @user.chat)
+          # Close opened connection
+          dupUser = global.Server.rooms[@user.chat]?[@user.id]
+
+          if dupUser
+            dupUser.send '<dup />'
+            dupUser.socket.end()
+
+          @id = @user.id
+          global.Server.clients[@id] = @
+
+
+          Chat.joinRoom.call(@)
         ).catch((err) => @logger.log @logger.level.ERROR, err, null)
-      when "v"
+      when packetTag == "v"
         ###
         Authenticate through chat.swf
         @spec <v p="PASSWORD(str)" n="USERNAME(str)" />
@@ -63,8 +86,8 @@ class Handler
         name = parser.getAttribute(packet, 'n')
         pw = parser.getAttribute(packet, 'p')
 
-        User.login(@, name, pw)
-      when "m"
+        User.login.call(@, name, pw)
+      when packetTag == "m"
         ###
         Send message
         @spec <m t="MESSAGE(str)" u="USER_ID(int)" />
@@ -72,51 +95,77 @@ class Handler
         user = parser.getAttribute(packet, 'u')
         msg = parser.getAttribute(packet, 't')
 
-        Chat.sendMessage(@, user, msg) unless msg.indexOf(Commander.identifier) is 0
-        Commander.process(@, user, msg)
-      when "c"
+        if msg.indexOf(Commander.identifier) is 0
+          Commander.process(@, user, msg)
+        else
+          Chat.sendMessage.call(@, user, msg)
+
+      when packetTag == "c"
         ###
         Save user profile data
         @spec <c u="2" t="/b USER_ID(int),UNKNOWN(int),,USERNAME(str),AVATAR(str),HOME(str),0,0,0,0....." />
         ###
+        type = parser.getAttribute(packet, 't')
+
+        return if type is '/KEEPALIVE'
+        
         @logger.log @logger.level.ERROR, "Unhandled user data update packet", null
-      when "z"
+      when packetTag == "z" and isSlash
         ###
         User profile
         @spec <z d="USER_ID_PROFILE(int)" u="USER_ID_ORIGIN(int)" t="TYPE(str)" />
         ###
         userProfileId = parser.getAttribute(packet, 'd')
-        userProfile = global.Server.getClientById( userProfileId )?.handler.user || null
+        userProfile = global.Server.getClientById( userProfileId )?.user || null
         userOrigin = parser.getAttribute(packet, 'u')
         type = parser.getAttribute(packet, 't')
 
         if type is '/l' and userProfile != null
-          username = if userProfile.username then 'N=\"#{userProfile.username}\"' else ''
+          username = if userProfile.username then "N=\"#{userProfile.username}\"" else ''
           status = "t=\"/a_Nofollow\"" # t=\"/a_on GROUP\"
           @send "<z b=\"1\" d=\"#{@user.id}\" u=\"#{userProfile.id}\" #{status} po=\"0\" #{userProfile.pStr} x=\"#{userProfile.xats||0}\" y=\"#{userProfile.days||0}\" q=\"3\" #{username} n=\"#{userProfile.nickname}\" a=\"#{userProfile.avatar}\" h=\"#{userProfile.url}\" v=\"2\" />"
         else if type is '/l'
           Profile.getById(userProfileId)
-            .then((data) => 
+            .then((data) =>
               @logger.log @logger.level.ERROR, "Unhandled null userProfile", null
             )
             .catch((err) => @logger.log @logger.level.ERROR, err, 'Profile.coffee - getById()')
         else if type is '/a'
           return
-        else
-          @send "<z u=\"#{@user.id}\" t=\"#{type}\" s=\"#{parser.getAttribute(packet, 's')}\" d=\"#{userProfileId}\" />"
-      else
-        if packetTag.indexOf('w') is 0
-          ###
-          Room pools
-          @spec <w v="ACTUAL_POOL(int) POOLS(int,int..)"  />
-          ###
-          @chat.onPool = packetTag.split('w')[1]
-          Chat.joinRoom(@, @user.chat)
-        else
-          @logger.log @logger.level.ERROR, "Unrecognized packet by the server!", packetTag
+      when packetTag == "p" or packetTag == "z"
+        ###
+        Private chat
+        @spec <p u="FROM-USER_ID" t="MESSAGE" [s="2" d="FROM-USER_ID"] /> - user receives
+        @spec <p u="TO-USER_ID" t="MESSAGE" /> - user sends
+        @spec <p u="TO-USER_ID" t="MESSAGE" s="2" d="FROM-USER_ID" > - user sends
+        @spec <z u="FROM-USER_ID" t="MESSAGE" [s="2"] d="TO-USER_ID" /> - user receives and sends
+        ###
+        ###
+        Private messages now more xat compatible. But is it required?
+        It looks too complicated and redudantly.
+        ###
+        toID = parser.getAttribute(packet, if packetTag == 'p' then 'u' else 'd')?.split('_')[0]
+        fromID = @user.id
+        message = parser.getAttribute(packet, 't')
+        s = parseInt(parser.getAttribute(packet, 's')) || 0
 
-          # INFO: We emit an event with the unrecognized packet so a plugin will be able to handle it in a future.
-          # global.Server.emit 'unrecognized-packet', packet
+        msg = builder.create(packetTag).append('E', "#{Date.now()}").append('u', fromID).append('t', message)
+        if s & 2
+          msg.append('s', s)
+        if packetTag == 'z' or s & 2
+          msg.append('d', if packetTag == 'z' then toID else fromID)
+
+        global.Server.getClientById(toID)?.send(msg.compose())
+      when packetTag.indexOf('w') is 0
+        ###
+        Room pools
+        @spec <w v="ACTUAL_POOL(int) POOLS(int,int..)"  />
+        ###
+        @chat.onPool = packetTag.split('w')[1]
+        Chat.joinRoom.call(@)
+      else
+        @logger.log @logger.level.ERROR, "Unrecognized packet by the server!", packetTag
+
 
   send: (packet) ->
     @socket.write "#{packet}\0"
@@ -125,10 +174,23 @@ class Handler
     @logger.log @logger.level.DEBUG, "-> Sent: #{packet}"
 
   broadcast: (packet) ->
-    client.write "#{packet}\0" for client in global.Server.clients when client.handler.id isnt @user.id and client.writable
-    
+
+    for _, client of global.Server.rooms[@user.chat]
+      continue if @user.id == client.user.id
+
+      console.log "Broadcasting from #{@user.id} to #{client.id}"
+
+      client.send packet
+
+
     # Debug
     @logger.log @logger.level.DEBUG, "-> Broadcasted: #{packet}"
+
+  setSocket: (socket) ->
+    @socket = socket
+
+    @socket.on 'data', (buffer) =>
+      @read buffer.toString('utf8')
 
   dispose: ->
     @socket.end()
