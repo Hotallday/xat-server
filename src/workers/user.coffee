@@ -105,6 +105,7 @@ module.exports =
       @user.guest = true
       @user.id = @handler.id
       return callback(true)
+
     database.exec('SELECT * FROM users WHERE id = ? AND k = ? LIMIT 1', [userId, @user.k]).then((data) =>
       if data.length < 1 or @user.k3 isnt data[0].k3
         return callback(false)
@@ -133,7 +134,7 @@ module.exports =
     )
 
   updateDetails: (callback) ->
-    database.exec('UPDATE users SET nickname = ?, avatar = ?, url = ?, remoteAddress = ? WHERE id = ?', [@user.nickname, @user.avatar, @user.url, @handler.socket.remoteAddress, @user.id]).then((data) =>
+    database.exec('UPDATE users SET nickname = ?, avatar = ?, url = ?, connectedlast = ? WHERE id = ?', [@user.nickname, @user.avatar, @user.url, @handler.socket.remoteAddress, @user.id]).then((data) =>
       @user.authenticated = true
 
       callback(true, null)
