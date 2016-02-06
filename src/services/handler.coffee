@@ -99,7 +99,7 @@ class Handler
 
         if msg.indexOf(Commander.identifier) is 0
           Commander.process(@, @user.id, msg)
-        else
+        else if msg.charAt(0) isnt '/'
           Chat.sendMessage.call(@, @user.id, msg)
 
       when packetTag == "c" and type is "/K2"
