@@ -80,7 +80,7 @@ module.exports =
       @broadcast packet.compose()
 
       ## Room messages
-      database.exec('SELECT * FROM (SELECT * FROM messages WHERE id = ? AND pool = ? ORDER BY time DESC LIMIT 15) sub ORDER BY time ASC LIMIT 0,15', [ @user.chat, @chat.onPool ]).then((data) =>
+      database.exec('SELECT * FROM (SELECT * FROM messages WHERE id = ? AND pool = ? AND visible = 1 ORDER BY time DESC LIMIT 15) sub ORDER BY time ASC LIMIT 0,15', [ @user.chat, @chat.onPool ]).then((data) =>
         offline = new Array()
         for message in data
           continue if global.Server.rooms[@user.chat][message.uid]?.chat.onPool is @chat.onPool
@@ -91,7 +91,7 @@ module.exports =
             .append('n', message.name)
             .append('a', message.avatar)
           packet.append('N', message.registered) if message.registered isnt 'unregistered'
-          
+
           if offline.indexOf(message.uid) is -1
             @send packet.compose()
             offline.push(message.uid)
